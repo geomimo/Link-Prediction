@@ -1,0 +1,82 @@
+{
+  "groups": {
+    "node": [
+      "deg_min",
+      "deg_max",
+      "clust_min",
+      "clust_max",
+      "core_min",
+      "core_max",
+      "pagerank_min",
+      "pagerank_max",
+      "betw_min",
+      "betw_max",
+      "close_min",
+      "close_max",
+      "avg_nbr_deg_min",
+      "avg_nbr_deg_max"
+    ],
+    "neighbourhood": [
+      "common_neighbors",
+      "jaccard",
+      "adamic_adar",
+      "resource_alloc",
+      "pref_attach",
+      "salton",
+      "sorensen",
+      "hub_promoted",
+      "hub_depressed",
+      "lhn"
+    ],
+    "path": [
+      "shortest_path",
+      "paths_3",
+      "katz",
+      "rooted_pagerank"
+    ],
+    "community": [
+      "same_comm_frac",
+      "dcsbm_comm",
+      "nbr_comm_affinity",
+      "spectral_cos"
+    ],
+    "attribute": [
+      "same_attr",
+      "attr_mixing_ratio",
+      "nbr_attr_affinity",
+      "dcsbm_attr"
+    ]
+  },
+  "selected": [
+    "rooted_pagerank",
+    "dcsbm_comm",
+    "katz",
+    "spectral_cos",
+    "nbr_comm_affinity",
+    "same_comm_frac",
+    "nbr_attr_affinity",
+    "paths_3",
+    "dcsbm_attr",
+    "pagerank_max",
+    "betw_max",
+    "attr_mixing_ratio",
+    "resource_alloc",
+    "same_attr",
+    "pref_attach",
+    "clust_max",
+    "avg_nbr_deg_max",
+    "avg_nbr_deg_min"
+  ],
+  "sensitive": [
+    "same_attr",
+    "attr_mixing_ratio",
+    "nbr_attr_affinity",
+    "dcsbm_attr"
+  ],
+  "config": {
+    "seed": 42,
+    "n_folds": 20,
+    "neg_ratio": 1,
+    "n_louvain": 10
+  }
+}
