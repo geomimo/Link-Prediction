@@ -1,0 +1,309 @@
+\documentclass[runningheads]{llncs}
+%
+\usepackage{graphicx}
+
+% Keep the template's document class, font size, spacing, and layout unchanged.
+% Main body limits: technical solution <= 5 pages; ethics essay <= 5 pages;
+% LLM reflection <= 1 page; total <= 11 pages. References do not count.
+
+\begin{document}
+%
+\title{Supervised Link Prediction in a Synthetic Social Network: Performance and Ethical Implications}
+%
+% List only active contributors, in alphabetical order.
+\author{
+Brendan Dunn\and
+Catherine Lau\and
+George Mimoglou\and
+Raluca Dinu
+}
+%
+\institute{University of Amsterdam, Amsterdam, The Netherlands}
+%
+\maketitle
+
+\begin{abstract}
+This report develops a supervised model that predicts hidden links between node pairs in a synthetic social network with 1,800 nodes, 6,377 observed edges and a sensitive categorical node attribute. To avoid target leakage, training pairs are built with a 20-fold edge hold-out, and each pair's features are computed on the graph without its fold's edges. The final model, a soft-voting ensemble of random forest, logistic regression and gradient boosting on 36 node, neighbourhood, path, community and attribute features, reaches 0.878 pseudo-test accuracy. The ethical analysis focuses on fairness in a LinkedIn-style friend recommender: the model relies mainly on community structure, a proxy for the attribute, so it falsely predicts same-attribute non-links far more often than cross-attribute ones. We argue that deleting the sensitive attribute is insufficient, and that mitigation must address community-driven recommendation through diversified candidate generation and monitoring of group-level error rates.
+
+\keywords{Link prediction \and Supervised learning \and Social networks \and AI ethics}
+\end{abstract}
+
+\section{Technical Solution}
+% Target: <= 5 pages total for all subsections in this section.
+% Aim for reproducibility: report decisions and results, rather than every code detail.
+
+\subsection{Introduction}
+\label{Introduction}
+We predict hidden links in a synthetic social network of 1,800 nodes and 6,377 visible edges, in which every node has one categorical attribute with six values. We treat this as binary classification of node pairs $(u,v)$ into link (1) and non-link (0). The key challenge is to build training pairs that resemble the test pairs without revealing the links to be predicted. Our final soft-voting ensemble on 36 features reaches $0.878 \pm 0.011$ pseudo-test accuracy.
+
+\subsection{Data Preparation}
+\label{Data Preparation}
+\noindent\textbf{Negative sampling.} The graph is undirected, so every pair is stored once as $(u,v)$ with $u < v$, and self-pairs are excluded. The 6,377 visible edges are the positives, and an equal number of negatives was sampled uniformly without replacement from the non-edges of the observed graph. The 1,416 test pairs were excluded from this pool, so that hidden links among them cannot receive a negative label; only their IDs were used, never their labels. The $1:1$ ratio gives both classes equal weight and keeps training manageable; it is a modelling choice, not an estimate of the true link rate, as non-edges greatly outnumber edges in sparse networks~\cite{lu_link_2011}.
+
+\noindent\textbf{Preventing target-edge leakage.} If a positive pair's features are computed while its edge is still in the graph, they encode the label: the shortest-path distance is 1, and both endpoint degrees are one higher. Test pairs never have this edge, so the shortcut would not transfer. We therefore partitioned the visible edges into 20 disjoint folds of about 319 edges, each with an equal number of negatives, and computed all features of fold $k$'s pairs on $G_k = G \setminus E_k$, the visible graph $G$ without the fold's edges $E_k$. With 20 folds each $G_k$ keeps about 95\% of the edges, limiting the mismatch with test features computed on $G$.
+
+\subsection{Feature Engineering}
+\label{Feature Engineering}
+
+Three properties of the network guided the features: skewed popularity (median degree 5, maximum 62); strong homophily (54\% of links join same-attribute nodes, against 17\% under random linking); and six communities of 300 nodes that contain 91\% of all edges, each with one attribute value covering about 75\% of its nodes.
+
+We built 36 pair features in five groups: \emph{node} (popularity and centrality), \emph{neighbourhood} (shared neighbours of $u$ and $v$), \emph{path} (proximity beyond direct neighbours), \emph{community} (whether $u$ and $v$ share a community) and \emph{attribute} (similarity of their attributes). Fig.~\ref{fig:auc} shows each feature's ROC-AUC on its own (0.5 is chance, 1.0 is perfect). Community and path features are the strongest, with rooted PageRank and the community block-model score reaching 0.91. Shared-neighbour features are much weaker (about 0.69), because most links have no common neighbour, and most node features carry little signal alone.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.5\linewidth]{features1.png}
+    \caption{Univariate signal per feature (ROC-AUC of each feature on its own).}
+    \label{fig:auc}
+\end{figure}
+
+Table~\ref{tab:ablation} measures each group's contribution with logistic regression. Community features alone come close to the full set (0.861 vs.\ 0.874). Attribute features are useful alone (0.802), but removing them barely changes accuracy (0.873); only when the community features are also removed do they add accuracy (0.843 to 0.853). The community features thus carry the attribute's information and act as its proxy.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Logistic regression on feature subsets (grouped 5-fold CV). All 36 features: accuracy 0.874, AUC 0.933.}
+\label{tab:ablation}
+\begin{tabular}{lccc|ccc}
+\hline
+ & \multicolumn{3}{c|}{Only this group} & \multicolumn{3}{c}{All except this group} \\
+Feature group & Acc. & AUC & \# & Acc. & AUC & \# \\
+\hline
+Node                  & 0.694 & 0.767 & 14 & 0.864 & 0.916 & 22 \\
+Neighbourhood         & 0.702 & 0.748 & 10 & 0.873 & 0.933 & 26 \\
+Path                  & 0.821 & 0.901 & 4  & 0.873 & 0.933 & 32 \\
+Community             & 0.861 & 0.900 & 4  & 0.853 & 0.923 & 32 \\
+Attribute             & 0.802 & 0.850 & 4  & 0.873 & 0.933 & 32 \\
+Attribute \& community & --   & --    & -- & 0.843 & 0.917 & 28 \\
+\hline
+\end{tabular}
+\end{table}
+
+Finally, we selected a feature subset: a feature was kept if its individual AUC was at least 0.55, it differed little between training and test pairs, and it did not correlate above 0.95 with an already kept feature. The resulting 18 features nearly match the full set (0.872 vs.\ 0.875 with a random forest), but the full set performed slightly better in validation and is used in the final model.
+
+\subsection{Model Selection}
+\label{Model Selection}
+% Describe baseline(s), such as a random classifier, heuristic score, and logistic regression.
+% Describe candidate supervised models covered in the course, e.g., logistic regression and
+% random forest. Explain suitability for this problem.
+% Define the primary selection metric and supporting metrics: accuracy (given balanced final
+% input), precision, recall, F1 score, ROC-AUC, and a confusion matrix where appropriate.
+% Motivate the final model using validation performance, complexity, and interpretability.
+
+\paragraph{Baselines.} The final input is balanced (708 links, 708 non-links), so a random classifier scores 0.5. Single features serve as heuristic baselines (Fig.~\ref{fig:auc}) and logistic regression as the supervised baseline: in grouped cross-validation it reaches 0.702 accuracy on the ten neighbourhood features and 0.874 on all 36.
+
+\paragraph{Candidates.} We compared five methods from the course: logistic regression, $k$-nearest neighbours ($k$-NN), a decision tree, a random forest and gradient boosting. On all features logistic regression and the random forest reached about the same accuracy (0.874), so neither the linear nor the non-linear family dominated. Many features are near-duplicates (Spearman $|\rho| \geq 0.97$ between all nine common-neighbour indices), so every model was trained on both the full set and the 18-feature subset. We also tested a \textbf{soft-voting ensemble} that averages the predicted probabilities of the three best models by grouped-CV accuracy: the random forest, gradient boosting and logistic regression (Table~\ref{tab:model-results}).
+
+\paragraph{Metrics.} The primary metric is \textbf{accuracy}, because the final input is exactly balanced and the assignment asks for high accuracy on it. ROC-AUC measures the ranking independently of the cut-off, and the share of pairs predicted as links shows whether the cut-off fits the balanced input.
+
+\paragraph{Choice.} We selected the model, feature set and decision rule with the highest mean pseudo-test accuracy (Section~\ref{Model Training and Validation}): the \textbf{soft-voting ensemble on all 36 features with a 0.5 cut-off}, whose $0.878 \pm 0.011$ accuracy and 0.938 AUC are the highest of all candidates (Table~\ref{tab:model-results}). The margin is small: all models lie between 0.869 and 0.878, all but the decision tree within about one standard error of the ensemble. The ensemble is also the most complex candidate, since it trains three models and cannot be read off one set of coefficients; logistic regression (0.874) is the transparent alternative at a small cost in accuracy.
+
+
+\subsection{Model Training and Validation}
+\label{Model Training and Validation}
+% Describe preprocessing, categorical encoding, scaling, and pipelines.
+% Specify the hyperparameter search method and search space.
+% Report validation results for all main candidate models in a concise table.
+% Explain the classification threshold. It must be selected without using the test set.
+% If the selected model is retrained on training plus validation data, state this explicitly.
+
+\paragraph{Preprocessing.} All 36 features are numerical. The attribute is not one-hot encoded but enters only through the four pair-level attribute features, because links depend on the combination of both endpoints' values. As $k$-NN distances and the L2 penalty of logistic regression depend on feature scale, these two models have a scaler (standardisation, or a quantile transform for the heavy-tailed counts) inside an sklearn \texttt{Pipeline} fitted on the training part of each split only; the tree models use raw features.
+
+\paragraph{Hyperparameter search.} We ran an exhaustive grid search on accuracy with \texttt{GroupKFold} (5 splits over the 20 hold-out folds of Section~\ref{Data Preparation}), so pairs that share a graph $G_k$ never fall on both sides of a split. The grids (chosen values in bold) were: \emph{logistic regression}, $C \in \{0.01, 0.1, \mathbf{1}, 10\}$, scaler \{\textbf{standard}, quantile\}; \emph{$k$-NN}, $k \in \{15, \mathbf{31}, 61, 121\}$, weights \{uniform, \textbf{distance}\}, scaler \{\textbf{standard}, quantile\}; \emph{decision tree}, depth $\in \{3, \mathbf{5}, 8, 12\}$, minimum leaf size $\in \{5, \mathbf{20}, 50\}$; \emph{random forest} (300 trees), features per split $\in \{\mathbf{\sqrt{p}}, 0.3p\}$, minimum leaf size $\in \{1, 5, \mathbf{20}\}$; \emph{gradient boosting} (at most 300 iterations), learning rate $\in \{\mathbf{0.05}, 0.1\}$, maximum leaves $\in \{\mathbf{15}, 31\}$, minimum leaf size $\in \{\mathbf{20}, 50\}$.
+
+\paragraph{Shift-aware pseudo-test.} Each $G_k$ has 5\% fewer edges than the graph $G$ used for the test pairs, a feature shift that grouped cross-validation cannot see. We therefore repeated the whole pipeline one level down in 5 rounds: each round hid 10\% of the visible edges as positives, added as many random non-edges (excluding the test pairs) as negatives, rebuilt the training set from the remaining graph with the same 20-fold procedure, and scored the tuned models. As the hyperparameters were tuned on the full training set, this pseudo-test is not fully independent of the tuning; both estimates agree within about 0.6 points for every model (Table~\ref{tab:model-results}).
+
+\begin{table}[t]
+\centering
+\small
+\caption{Grouped CV vs.\ pseudo-test accuracy (mean $\pm$ std, 5 rounds).}
+\label{tab:model-results}
+\begin{tabular}{lccc|cc}
+\hline
+ & \multicolumn{3}{c|}{All 36 features} & \multicolumn{2}{c}{Selected 18 features} \\
+Model & CV acc. & Pseudo acc. & Pseudo AUC & CV acc. & Pseudo acc. \\
+\hline
+Logistic regression & 0.874 & $0.874 \pm 0.014$ & 0.934 & 0.866 & $0.869 \pm 0.010$ \\
+$k$-NN              & 0.869 & $0.874 \pm 0.011$ & 0.927 & 0.866 & $0.872 \pm 0.012$ \\
+Decision tree       & 0.870 & $0.869 \pm 0.013$ & 0.923 & 0.869 & $0.869 \pm 0.014$ \\
+Random forest       & 0.875 & $0.875 \pm 0.012$ & 0.936 & 0.872 & $0.874 \pm 0.012$ \\
+Gradient boosting   & 0.875 & $0.876 \pm 0.011$ & 0.936 & 0.873 & $0.875 \pm 0.015$ \\
+\textbf{Ensemble}   & \textbf{0.875} & $\mathbf{0.878 \pm 0.011}$ & \textbf{0.938} & 0.873 & $0.875 \pm 0.014$ \\
+\hline
+\end{tabular}
+\end{table}
+
+\paragraph{Classification threshold.} Since the test set is balanced, we also tried labelling the top-scoring half of the pairs as links. On the pseudo-test this never beat the 0.5 cut-off (ensemble: 0.876 vs.\ 0.878), and at 0.5 the models already label 51--53\% of the pairs as links, so we kept 0.5; this choice used only pseudo-test data, never test labels or predictions. \emph{Final fit:} the ensemble was refit on all 12{,}754 training pairs (CV training and validation folds combined).
+
+\subsection{Final Results}
+\label{Final Results}
+
+The ensemble's pseudo-test accuracy (0.878) is about 38 points above a random classifier and 18 above logistic regression on the neighbourhood features (0.702), and its out-of-fold predictions agree (Table~\ref{tab:confusion}): 0.875 accuracy, 0.856 precision, 0.901 recall and 0.848 specificity (FPR 0.152, FNR 0.099). It also matches the best accuracy any classifier could reach if the network had been generated by a fitted degree-corrected block model (0.876), suggesting that little signal is left for a better model.
+
+The errors are asymmetric: there are more false positives (967) than false negatives (633), and 729 of the 1{,}416 test pairs (51.5\%) are labelled as links, slightly above the balanced 50\%. Most missed links cross communities: the model finds only 22\% of the links between communities, against 98\% of those inside them, a pattern examined in the Ethics Essay. \texttt{submission.csv} holds one 0/1 \texttt{prediction} for each of the 1{,}416 unique \texttt{ID}s (0 to 1{,}415) of \texttt{solutionInput.csv}.
+
+\begin{table}[ht]
+\centering
+\small
+\caption{Out-of-fold confusion matrix of the final ensemble (0.5 cut-off).}
+\label{tab:confusion}
+\begin{tabular}{lcc}
+\hline
+& Predicted link & Predicted non-link \\
+\hline
+Actual link & 5{,}744 (TP) & 633 (FN) \\
+Actual non-link & 967 (FP) & 5{,}410 (TN) \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Limitations}
+
+\noindent\textbf{Synthetic network.} In real social networks the feature groups may matter differently. \textbf{Limited attributes.} The single six-valued attribute tracks the community and adds almost no accuracy; real networks have richer node information. \textbf{No causal conclusions.} The model finds correlations, not why two people are connected. \textbf{Ethical limitations.} Predicted links are not confirmed relationships or evidence of wrongdoing.
+
+\newpage
+\section{Ethics Essay}
+% Target: <= 5 pages total. Choose ONE central ethical issue for detailed analysis.
+% A suitable candidate is fairness risk from a potentially sensitive categorical attribute and
+% from structural features that reflect unequal historical opportunities for social connections.
+% Change the focus if the team instead selects privacy or transparency.
+
+\subsection{Introduction}
+\label{Ethics Introduction}
+% Target: approximately 0.5 page.
+% Identify one concrete potential problem each for fairness, privacy, and transparency.
+% Tie every problem to the actual Part 1 data, features, model, predictions, and a plausible use.
+% Identify the single issue investigated in depth and state a concise thesis/roadmap.
+
+Our model predicts missing links in a social network. Such a model could power a friend recommender that suggests predicted links as new contacts, or be reused in higher-stakes settings such as investigating criminal networks. We take the friend recommender as our main use and analyse the model through three lenses: fairness, privacy and transparency.
+
+Our first concern is fairness: the model misses nearly twice as many real links for members of groups a and b (false negative rates of 17.1\% and 15.5\%) as for groups d and f (9.6\% and 9.0\%), because members of groups a and b have more ties that cross community boundaries, which are precisely the links the model struggles to find (Section~\ref{Ethics Analysis}).
+
+A second concern is privacy: the network reveals the attribute even when the model does not use it. About 75\% of each community shares one attribute value, so community membership alone indicates most members' attribute (M1 in Section~\ref{Ethics Analysis}). Friendship and group structure are known to reveal attributes that users kept private~\cite{zheleva_join_2009}, so members who never disclosed their attribute are not protected by its omission.
+
+A third concern is transparency: the final model averages three models over 36 features, so no single coefficient or rule explains a given suggestion, which makes it hard for a member to understand or contest a suggestion.
+
+We investigate fairness in depth and measure it mainly as \emph{equal opportunity}: a real link should have the same chance of being found whichever group a member belongs to~\cite{hardt2016}. Section~\ref{Ethics Analysis} shows that this criterion is violated and why, and Section~\ref{Ethics Mitigation} proposes mitigations.
+
+\subsection{Analysis}
+\label{Ethics Analysis}
+% Target: approximately 2 pages.
+% Define the selected ethical issue; explain its causes and mechanisms.
+% Identify affected people/groups and direct and indirect harms.
+% Make the link to Part 1 specific: graph features, categorical attribute use, negative sampling,
+% model choice, classification threshold, and likely error patterns.
+% Use several credible academic or policy sources and distinguish sourced claims from the group's
+% own viewpoint.
+% Where feasible, specify evidence/analyses that could reveal the problem: subgroup error rates,
+% calibration, disparate impact, privacy risk, or explanation quality. State what synthetic data
+% cannot establish.
+
+In a friend recommender, equal opportunity means that every member's real connections have the same chance of being suggested, whichever group the member belongs to~\cite{hardt2016}; a real link that the model misses is a contact that is never suggested. We checked this on the final model's out-of-fold predictions for the training pairs (Section~\ref{Final Results}), grouping each pair by the attribute values of its two members (Table~\ref{tab:groups}).
+
+The model does not meet this standard. It finds 91\% of the real links of members of group f, but only 83\% of those of group a, and it misses almost twice as many real contacts of members of groups a and b as of groups d and f. Three linked mechanisms explain why.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Final model per attribute value (out-of-fold). A pair counts for every attribute value among its two members. \emph{Between}: links whose endpoints fell in different Louvain communities in most of 10 runs.}
+\label{tab:groups}
+\begin{tabular}{lcc|ccc|c|cc}
+\hline
+ & & Link & \multicolumn{3}{c|}{Recall} & Share & & \\
+Group & Links & share & all & inside & between & between & Precision & FPR \\
+\hline
+a   & 1{,}471 & 0.437 & 0.829 & 0.975 & 0.237 & 0.198 & 0.840 & 0.123 \\
+b   & 1{,}545 & 0.438 & 0.845 & 0.980 & 0.225 & 0.179 & 0.843 & 0.123 \\
+c   & 1{,}626 & 0.453 & 0.875 & 0.982 & 0.171 & 0.133 & 0.869 & 0.109 \\
+d   & 1{,}547 & 0.441 & 0.904 & 0.989 & 0.168 & 0.104 & 0.856 & 0.121 \\
+e   & 1{,}599 & 0.447 & 0.894 & 0.986 & 0.194 & 0.116 & 0.851 & 0.127 \\
+f   & 1{,}535 & 0.442 & 0.910 & 0.984 & 0.147 & 0.089 & 0.874 & 0.104 \\
+\hline
+All & 6{,}377 & 0.500 & 0.901 & 0.984 & 0.223 & 0.109 & 0.857 & 0.151 \\
+\hline
+\end{tabular}
+\end{table}
+
+The first mechanism is \emph{proxy encoding} (M1). The model does not need the sensitive attribute, because the network already contains it: in each community, about three in four members share the same attribute value. Removing the attribute features therefore changes accuracy and error rates by less than one point, as the community features carry the same information (Table~\ref{tab:ablation}). Removing the community features as well does not help either: links between attribute groups are then found slightly less often, not more (Table~\ref{tab:segments}). Simply deleting a sensitive attribute is known to fail when other features encode it~\cite{barocas2023}.
+
+The second mechanism, and the main cause of the gap, is that the model \emph{follows communities} (M2). It finds about 98\% of the links inside a community in every group, but only about one in five links between communities. Groups do not have the same mix of links: the links of groups a and b cross community boundaries about twice as often as those of groups d and f. If group a's links crossed communities as rarely as group f's, the model would find 91\% of them, as for group f: the gap is a matter of network position, not of the attribute itself.
+
+The third mechanism is \emph{homophily amplification} (M3). The model leans towards same-attribute pairs: it would suggest about half of the same-attribute strangers in our data as friends, but fewer than one in ten strangers from another group (Table~\ref{tab:segments}). Its predicted network is therefore slightly less mixed than the real one. In recommender systems, the choices users make among suggestions become new training data, and such feedback loops make behaviour more homogeneous~\cite{chaney2018}; over time, this could deepen the separation between groups.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Out-of-fold rates by pair type and by degree of the less-connected endpoint (accuracy 0.875 with all features, 0.860 without).}
+\label{tab:segments}
+\begin{tabular}{lcc|ccc|cc}
+\hline
+ & & Link & \multicolumn{3}{c|}{All features} & \multicolumn{2}{c}{w/o attr.\ \& comm.} \\
+Pairs & Number & share & Pred.\ share & Recall & FPR & Recall & FPR \\
+\hline
+All                & 12{,}754 & 0.500 & 0.526 & 0.901 & 0.151 & 0.872 & 0.152 \\
+Same-attribute     & 4{,}469  & 0.768 & 0.863 & 0.966 & 0.521 & 0.927 & 0.449 \\
+Cross-attribute    & 8{,}285  & 0.356 & 0.344 & 0.824 & 0.078 & 0.809 & 0.094 \\
+Min.\ degree $\leq 3$ & 5{,}169 & 0.571 & 0.601 & 0.912 & 0.188 & 0.890 & 0.201 \\
+Min.\ degree 4--6  & 5{,}826  & 0.370 & 0.400 & 0.872 & 0.123 & 0.814 & 0.112 \\
+Min.\ degree $\geq 7$ & 1{,}759 & 0.723 & 0.720 & 0.924 & 0.186 & 0.930 & 0.236 \\
+\hline
+\end{tabular}
+\end{table}
+
+Not every disadvantage we looked for appears. Members with very few connections are barely served worse than well-connected ones (Table~\ref{tab:segments}). The larger divide is between links within and across groups: the model finds 97\% of same-attribute links but only 82\% of cross-attribute ones.
+
+Who is harmed depends on how the model is used. In a friend recommender, the main losers are members whose social circles bridge communities, disproportionately those of groups a and b: they are shown fewer of the people they actually know, while same-group strangers are suggested far more often than others. If the model were reused to investigate criminal networks, a predicted link would become suspicion. About 15\% of unconnected pairs would be flagged, and a same-group pair would be flagged almost seven times as often as a mixed pair, so suspicion would follow own-group contacts (``guilt by association'').
+
+Whether the model counts as unfair also depends on the yardstick. Judged by \emph{predictive parity}, which asks that a suggested link is equally likely to be real for every group, the model looks nearly fair: precision differs by only about three points between groups. Judged by equal opportunity it is not, as recall differs by eight points (Table~\ref{tab:groups}). For pair types such a conflict is even unavoidable. Links are far more common among same-attribute pairs than among cross-attribute pairs (77\% vs.\ 36\%), and when base rates differ, an imperfect classifier cannot have equal precision and equal error rates at the same time~\cite{kleinberg2017,chouldechova2017}. Choosing a fairness criterion is therefore a value judgement, not a technical detail.
+
+Finally, our evidence has limits. The network is synthetic, and the rates come from balanced pairs with randomly sampled non-links. In a real recommender almost every candidate pair is unconnected (only 0.4\% of all possible pairs in our network are observed links), so far more suggestions would be wrong, and the disparities users experience could differ from the ones we measured.
+
+\subsection{Mitigation}
+\label{Ethics Mitigation}
+% Target: approximately 2 pages.
+% Present several linked mitigation layers: data/measurement; features/model/threshold;
+% evaluation and auditing; and organisational governance/deployment safeguards.
+% For each mitigation, explain how it addresses a mechanism from Analysis, as well as its limits
+% and trade-offs in accuracy, privacy, transparency, fairness, or utility.
+% These are proposed improvements for the essay; they need not be implemented in Part 1.
+% Do not present one technical fairness metric or intervention as a complete solution.
+
+No single measure removes the problems described above, so we propose mitigations on four linked layers. They depend on each other: audits need the attribute that privacy would remove, changes to the model can only be judged through audits, and governance decides which trade-off is acceptable.
+
+The first layer is \emph{data and measurement}. We would keep the sensitive attribute for auditing but not use it for prediction. It adds no accuracy (M1), yet without it the gap between groups could not even have been measured. It should be stored separately, with restricted access and with consent, and used only to compute error rates per group. The price is privacy: holding sensitive data creates a risk of leaks and misuse, and users who refuse consent leave gaps in the audit. The model would also need \emph{information that the graph lacks}, because from the network alone it finds only about one in five links between communities (M2). Signals such as shared schools, workplaces or events might reveal such ties, but collecting them conflicts with data minimisation~\cite[Art.~5(1)(c)]{gdpr2016}, deepens the privacy intrusion, and could import new biases if those signals are themselves segregated; we did not test this. Finally, the model should be evaluated under realistic conditions, with as many unconnected pairs as a real recommender would see, to show the disparities users would actually experience. Even then the evaluation stays uncertain, because an unobserved link is not necessarily absent: the hidden links in our own test set are exactly such pairs.
+
+The second layer is the \emph{model and its decision threshold}. The obvious step, and the only one we tested, is to remove features, but it fails because of M1. Dropping the attribute features (``fairness through unawareness'') changes nothing. Dropping the community features as well costs 1.5 points of accuracy and narrows the gap between same- and cross-attribute links only by \emph{levelling down}: the model finds fewer same-attribute links, while cross-attribute links and the links of moderately connected members are also found less often, not more (Table~\ref{tab:segments}). The predicted network becomes barely more mixed.
+
+Another route is \emph{fairness-aware training}, which changes what the model optimises. Masrour et al.~\cite{masrour2020} judge predicted links by how strongly they stay within groups (network modularity) and use adversarial learning and a post-processing step to produce more links between groups. Li et al.~\cite{li2021dyadic} ask the model to predict links at about the same rate for pairs within and between groups (\emph{dyadic fairness}). Both target the imbalance of M3, but in our data links are about twice as common among same-attribute pairs, so forcing equal rates must create errors: false links across groups or missed links within them. Both methods also need the attribute during training, and as we did not test them, we cannot say how much accuracy they would cost.
+
+\emph{Post-processing} could instead equalise recall directly, as equal opportunity asks~\cite{hardt2016}, by replacing our single cut-off (Section~\ref{Model Training and Validation}) with a lower one for pairs involving members of groups a and b. This treats members differently by group and uses the attribute at decision time. It also targets the wrong unit: inside communities every group is already served almost equally well, and the gap comes from network position (M2). A lower cut-off for cross-community pairs would address the cause itself, at a cost in precision that we did not measure. Finally, the recommender could \emph{re-rank} its suggestions and reserve some places for the most likely cross-community contacts. This does not fix the classifier's errors but counters the feedback loop of M3. The reserved places would go to less certain candidates, and choosing how many to reserve is a value judgement made on users' behalf.
+
+The third layer is \emph{evaluation and auditing}. Because the verdict depends on the yardstick (Section~\ref{Ethics Analysis}), audits should report several fairness measures per group, with their uncertainty, and make the choice between them explicit. They should also split links by network position and not only by attribute, since the cause of our disparity only became visible once we separated links inside and between communities (M2). As M3 unfolds over time~\cite{chaney2018}, a one-off audit is not enough: a deployed recommender should keep track of how mixed its suggestions and the accepted links are, compared with the real network, where almost half of all links join different groups. These results belong in a model card~\cite{mitchell2019} that states the intended use, the error rates per group and the known weakness on cross-community links, which also serves transparency. Audits have limits too: they need the attribute, and with a single attribute, intersectional subgroups cannot be checked.
+
+The fourth layer is \emph{governance}, because technical measures leave open which disparity is acceptable, and for which use. The first safeguard is \emph{purpose limitation}: our model was validated only on balanced pairs for a recommendation-like task and should not be reused to investigate criminal networks, where it would spread guilt by association (Section~\ref{Ethics Analysis}). The AI Act classifies the profiling of persons in criminal investigations as high-risk and requires risk management, data governance and human oversight for such systems~\cite[Annex~III; Arts.~9, 10, 14]{aiact2024}. The second is an \emph{impact assessment} before deployment, in which the views of affected users or their representatives are sought~\cite[Art.~35(9)]{gdpr2016}, so that the choice of an acceptable disparity is not left to the data scientist alone. The third is \emph{user agency}: members should see why someone is suggested and be able to dismiss suggestions or opt out of being recommended. Explanations create their own tension, because explaining a community-based suggestion reveals the inferred community and thereby partly the attribute (M1). They are also easier with a simpler model, and logistic regression is almost as accurate as our ensemble, with a difference within one standard error (Section~\ref{Model Selection}). \emph{Our viewpoint is} that, for a friend recommender, this small difference is worth giving up for a model whose suggestions can be explained. Governance, finally, works only if it is enforced.
+
+\subsection{Conclusion}
+\label{Ethics Conclusion}
+Our link predictor is accurate overall (0.878 on the pseudo-test), but it does not give every group equal opportunity. Dropping the sensitive attribute changes almost nothing, because the community features already carry it. The model finds almost every link inside a community but only about one in five between communities, and members of groups a and b have more of these bridging ties. As a result, it misses almost twice as many of their real contacts as of members of groups d and f. In a friend recommender it would also suggest same-group strangers almost seven times as often as strangers from other groups, and feedback loops can make behaviour more homogeneous~\cite{chaney2018}. Those whose ties bridge communities lose most.
+
+We think no single fix works here. Because the disparity comes from network position rather than from the attribute itself, we prefer measures that target position over cut-offs based on the attribute: keep the attribute for auditing only, audit by group and by network position, re-rank to leave room for cross-community suggestions, and favour a model we can explain. Our evidence is limited (Section~\ref{Ethics Analysis}), and the only mitigation we tested was feature removal. Before deployment we would need to know how the model behaves with realistic numbers of unconnected pairs, what each mitigation costs in accuracy, and how it performs in a monitored pilot with consented data.
+\newpage
+\section{Reflection on LLM Use}
+
+\noindent\textbf{Use description.} We used LLMs for explanations of labs and lecture notes, tutoring, debugging, boilerplate code generation, feature and model exploration, literature searches, notebook organisation, and report editing. Tutoring involved examples and questions to test understanding; debugging involved reviewing code line by line. LLMs also helped with LaTeX formulas, formatting, spelling, and grammar.
+
+\medskip
+\noindent\textbf{Advantages for the assignment.} LLMs reduced the time spent importing data and preparing training examples, allowing more time for feature selection and model tuning. They helped us explore more approaches within the available time. When constructing folds and sampling negative pairs, an LLM helped identify the source of data leakage by working through the code line by line. Organising notebooks into sections with descriptions made team review easier, while LaTeX and language support reduced report preparation time. The assignment could have been completed without LLMs, but we would likely have explored fewer approaches and produced a less sophisticated solution, potentially with lower accuracy.
+
+\medskip
+\noindent\textbf{Advantages for learning.} LLMs were most useful as tutors rather than answer generators. Brendan used study mode to understand data leakage through examples and questions that required him to explain the concept in his own words. This helped him apply the concept to training-data preparation. LLM-assisted literature searches also reduced the time spent finding relevant papers. These benefits depended on engaging with explanations and reading sources rather than accepting outputs without checking them.
+
+\medskip
+\noindent\textbf{Disadvantages.} LLMs sometimes made mistakes or introduced concepts beyond the course's scope, creating confusion and extra verification work. Sophisticated generated code could be difficult to follow, making errors harder to identify. A simpler implementation written independently might have been less effective but better understood.
+
+LLMs could also create false confidence: following an explanation or obtaining working code did not prove that we could solve the problem independently. Immediate solutions made it tempting to bypass the persistence and time management involved in learning. This created tension between submitting a sophisticated solution for a better mark and submitting simpler work that reflected our own abilities. More broadly, students could achieve high assignment marks without corresponding subject knowledge, making grades less reliable indicators of understanding and devaluing degrees in geneal. 
+
+% Add references throughout using \cite{key} and place full BibTeX entries in references.bib.
+\bibliographystyle{splncs04}
+\bibliography{references}
+
+\end{document}
